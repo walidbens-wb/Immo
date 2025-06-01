@@ -1,0 +1,73 @@
+<?php
+$conn = new mysqli("localhost", "root", "", "immobilier");
+if ($conn->connect_error) die("Erreur : " . $conn->connect_error);
+
+$type = 'Immobilier commercial';
+
+// Biens
+$stmt = $conn->prepare("SELECT * FROM biens WHERE type = ? AND vendu = 0");
+$stmt->bind_param("s", $type);
+$stmt->execute();
+$biens = $stmt->get_result();
+
+// Agents
+$stmt2 = $conn->prepare("SELECT DISTINCT a.* FROM agents a JOIN biens b ON a.ID_agent = b.ID_agent WHERE b.type = ? LIMIT 5");
+$stmt2->bind_param("s", $type);
+$stmt2->execute();
+$agents = $stmt2->get_result();
+?>
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title><?= $type ?></title>
+  <style>
+    body { font-family: Arial; text-align: center; background: #f4f4f4; }
+    .bien, .agent-section { background: white; border-radius: 10px; margin: 20px auto; padding: 20px; width: 80%; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    .bien img, .agent img { max-width: 100%; border-radius: 8px; }
+    .agent-list { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+    .agent img { width: 100px; height: 100px; border-radius: 50%; object-fit: cover; }
+    .agent { width: 120px; }
+  </style>
+</head>
+<body>
+
+  <h1>🏢 Biens commerciaux disponibles</h1>
+
+  <?php if ($biens->num_rows > 0): ?>
+    <?php while ($bien = $biens->fetch_assoc()): ?>
+      <div class="bien">
+        <h2><?= htmlspecialchars($bien['titre']) ?></h2>
+        <img src="images/<?= htmlspecialchars($bien['image']) ?>" alt="">
+        <p><strong>Ville :</strong> <?= $bien['ville'] ?></p>
+        <p><strong>Prix :</strong> <?= number_format($bien['prix'], 0, ',', ' ') ?> €</p>
+        <a href="detail_biens.php?id=<?= $bien['ID_bien'] ?>">Voir les détails</a>
+      </div>
+    <?php endwhile; ?>
+  <?php else: ?>
+    <p>Aucun bien commercial actuellement disponible.</p>
+  <?php endif; ?>
+
+  <div class="agent-section">
+  <h2>👤 Nos agents spécialisés en immobilier résidentiel</h2>
+  <div class="agent-grid">
+    <?php
+    $stmt2 = $conn->prepare("SELECT DISTINCT a.* FROM agents a JOIN biens b ON a.ID_agent = b.ID_agent WHERE b.type = ? LIMIT 5");
+    $stmt2->bind_param("s", $type);
+    $stmt2->execute();
+    $agents = $stmt2->get_result();
+    while ($agent = $agents->fetch_assoc()): ?>
+      <div class="agent-card">
+        <img src="images/<?= htmlspecialchars($agent['photo']) ?>" alt="Photo de l'agent">
+        <h3><?= htmlspecialchars($agent['prenom']) ?> <?= htmlspecialchars($agent['nom']) ?></h3>
+        <p><?= htmlspecialchars($agent['email']) ?></p>
+        <p><?= htmlspecialchars($agent['tel']) ?></p>
+        <a href="recherche_agent.php?id=<?= $agent['ID_agent'] ?>">Voir le profil</a>
+      </div>
+    <?php endwhile; ?>
+  </div>
+</div>
+<?php $conn->close(); ?>
+</body>
+</html>
