@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Omnes Immobilier - Accueil</title> <!-- Etablissement du titre Omnes Immobilier - Accueil -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="wrapper">
+        <header>
+            <h1>Omnes Immobilier</h1>
+            <img src="images/omnes.png" alt="Logo">
+        </header>
+
+        <nav>
+            <button class="active">Accueil</button>
+            <button onclick="window.location.href='parcourir.html'">Tout Parcourir</button> <!-- Création de bouton pour se déplacer-->
+            <button onclick="window.location.href='recherche.html'">Recherche</button>
+            <button onclick="window.location.href='rendez.html'">Rendez-vous</button>
+            <button onclick="window.location.href='compte.html'">Votre Compte</button>
+        </nav>
+
+        <section>
+            <h2>Bienvenue sur Omnes Immobilier</h2>
+            <div id="evenement">
+                <h3>Évènement de la semaine</h3>
+                <p>Visite libre le samedi au 25 rue de Paris</p>
+            </div>
+            <div id="carrousel">
+                <!-- Les images seront ajoutées ici dynamiquement par PHP plus tard(Nous n'avons pas eu le temps malheureusment) -->
+            </div>
+        </section>
+
+        <footer>
+    <p>Contact : contact@omnesimmobilier.fr | +33 1 23 45 67 89</p>
+
+    <div id="map" style="margin-top: 10px;"> <!-- Point carte-->
+        <iframe
+            src="https://www.google.com/maps?q=10+rue+Sextius+Michel,+75015+Paris,+France&output=embed"
+            width="100%"
+            height="300"
+            style="border:0; border-radius: 10px;"
+            allowfullscreen=""
+            loading="lazy"
+            referrerpolicy="no-referrer-when-downgrade">
+        </iframe>
+    </div>
+</footer>
+    </div>
+</body>
+</html>
+<?php
+session_start();
+
+if (!isset($_SESSION['user']) || $_SESSION['role'] !== 'agent') {
+    header("Location: compte.html");
+    exit;
+}
+
+$user = $_SESSION['user'];
+$rdvs = [];
+
+try {
+    $bdd = new PDO('mysql:host=localhost;dbname=immobilier;charset=utf8', 'root', '');
+    $bdd->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    $stmt = $bdd->prepare("
+        SELECT r.date_rdv, r.heure_debut, r.heure_fin, c.prenom, c.nom
+        FROM rdv r
+        JOIN clients c ON r.ID_client = c.ID_client
+        WHERE r.ID_agent = ?
+        ORDER BY r.date_rdv, r.heure_debut
+    ");
+    $stmt->execute([$user['ID_agent']]);
+    $rdvs = $stmt->fetchAll();
+} catch (PDOException $e) {
+    echo "Erreur : " . $e->getMessage();
+}
+?>
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Mon Profil - Agent</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrapper">
+    <header>
+        <h1>Bienvenue, <?= htmlspecialchars($user['prenom']) ?> <?= htmlspecialchars($user['nom']) ?></h1>
+        <p>Type de compte : <strong>Agent</strong></p>
+    </header>
+
+    <section>
+        <h2>Informations de votre profil</h2>
+        <ul>
+            <li>Email : <?= htmlspecialchars($user['email']) ?></li>
+            <li>Téléphone : <?= htmlspecialchars($user['tel']) ?></li>
+            <li>
+    <form action="cv/<?= htmlspecialchars($user['cv']) ?>" method="get" target="_blank" style="display:inline;">
+        <button type="submit">📄 Voir le CV</button>
+    </form>
+</li>
+
+        </ul>
+
+        <h2>Consultations à venir</h2>
+        <?php if (empty($rdvs)): ?>
+            <p>Aucune consultation prévue.</p>
+        <?php else: ?>
+            <ul>
+                <?php foreach ($rdvs as $rdv): ?>
+                    <li>
+                        Le <?= htmlspecialchars($rdv['date_rdv']) ?>
+                        de <?= substr($rdv['heure_debut'], 0, 5) ?> à <?= substr($rdv['heure_fin'], 0, 5) ?>
+                        avec <?= htmlspecialchars($rdv['prenom']) ?> <?= htmlspecialchars($rdv['nom']) ?>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </section>
+
+    <footer>
+        <p><a href="deco.php">Se déconnecter</a></p>
+    </footer>
+</div>
+</body>
+</html>
+<?php
+session_start();
+
+// Vérifie que l'utilisateur est connecté et est admin
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+    header("Location: compte.html");
+    exit;
+}
+
+$bdd = new PDO('mysql:host=localhost;dbname=immobilier;charset=utf8', 'root', '');
+
+// Suppression d’un agent
+if (isset($_GET['supprimer'])) {
+    $id = intval($_GET['supprimer']);
+    $req = $bdd->prepare("DELETE FROM agents WHERE id_agent = ?");
+    $req->execute([$id]);
+    header("Location: admin.php");
+    exit;
+}
+?>
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin - Gestion des Agents</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="wrapper">
+        <h1>Espace Administrateur</h1>
+        <p>Bienvenue <?= htmlspecialchars($_SESSION['user']['prenom']) ?> <?= htmlspecialchars($_SESSION['user']['nom']) ?></p>
+
+        <h2>Ajouter un agent immobilier</h2>
+        <form method="POST" action="ajouter_agent.php">
+            <input type="text" name="nom" placeholder="Nom" required>
+            <input type="text" name="prenom" placeholder="Prénom" required>
+            <input type="email" name="email" placeholder="Email" required>
+            <input type="text" name="mdp" placeholder="Mot de passe" required>
+            <input type="text" name="tel" placeholder="Téléphone" required>
+            <input type="text" name="photo" placeholder="Photo (chemin)" required>
+            <input type="text" name="cv" placeholder="CV (chemin)" required>
+            <button type="submit">Ajouter</button>
+        </form>
+
+        <h2>Liste des agents</h2>
+        <ul>
+        <?php
+        $agents = $bdd->query("SELECT * FROM agents");
+        while ($agent = $agents->fetch()):
+        ?>
+            <li>
+    <?= htmlspecialchars($agent['prenom']) ?> <?= htmlspecialchars($agent['nom']) ?> - <?= htmlspecialchars($agent['email']) ?>
+    <a href="modifier.php?id_agent=<?= $agent['ID_agent'] ?>">✏️ Modifier CV</a>
+    <a href="cv/<?= htmlspecialchars($agent['cv']) ?>" target="_blank">🔍 Voir CV</a>
+    <a href="?supprimer=<?= $agent['ID_agent'] ?>" onclick="return confirm('Supprimer cet agent ?')">❌</a>
+</li>
+<?php endwhile; ?>
+</ul>
+<h2>Ajouter un bien immobilier</h2>
+<form method="POST" action="ajouter_bien.php">
+    <input type="text" name="titre" placeholder="Titre" required>
+    <input type="text" name="description" placeholder="Description" required>
+    <input type="text" name="ville" placeholder="Ville" required>
+    <input type="text" name="adresse" placeholder="Adresse" required>
+    <input type="text" name="image" placeholder="Image (chemin)" required>
+    <input type="number" name="prix" placeholder="Prix" required>
+    <input type="text" name="digicode" placeholder="Digicode (optionnel)">
+    <select name="type" required>
+        <option value="">-- Type de bien --</option>
+        <option value="Immobilier résidentiel">Immobilier résidentiel</option>
+        <option value="Immobilier commercial">Immobilier commercial</option>
+        <option value="Terrain">Terrain</option>
+        <option value="Appartement à louer">Appartement à louer</option>
+        <option value="Immobilier en vente par enchère">Immobilier en vente par enchère</option>
+    </select>
+    <select name="id_agent" required>
+        <option value="">-- Agent assigné --</option>
+        <?php
+        $all_agents = $bdd->query("SELECT ID_agent, prenom, nom FROM agents");
+        while ($a = $all_agents->fetch()):
+        ?>
+            <option value="<?= $a['ID_agent'] ?>"><?= $a['prenom'] ?> <?= $a['nom'] ?></option>
+        <?php endwhile; ?>
+    </select>
+    <button type="submit">Ajouter</button>
+</form>
+<h2>Liste des biens</h2>
+<ul>
+<?php
+$biens = $bdd->query("SELECT ID_bien, titre FROM biens ORDER BY ID_bien DESC");
+while ($b = $biens->fetch()):
+?>
+    <li>
+        🏠 <?= htmlspecialchars($b['titre']) ?>
+        <a href="detail_biens.php?id=<?= $b['ID_bien'] ?>" target="_blank">🔍 Voir</a>
+        <a href="supprimer_bien.php?id=<?= $b['ID_bien'] ?>" onclick="return confirm('Supprimer ce bien ?')">❌ Supprimer</a>
+    </li>
+<?php endwhile; ?>
+</ul>
+
+        </ul>
+         </section>
+
+        <?php endwhile; ?>
+    </select>
+    <button type="submit">Ajouter</button>
+</form>
+<h2>Liste des biens</h2>
+<ul>
+<?php
+$biens = $bdd->query("SELECT ID_bien, titre FROM biens ORDER BY ID_bien DESC");
+while ($b = $biens->fetch()):
+?>
+    <li>
+        🏠 <?= htmlspecialchars($b['titre']) ?>
+        <a href="detail_biens.php?id=<?= $b['ID_bien'] ?>" target="_blank">🔍 Voir</a>
+        <a href="supprimer_bien.php?id=<?= $b['ID_bien'] ?>" onclick="return confirm('Supprimer ce bien ?')">❌ Supprimer</a>
+    </li>
+<?php endwhile; ?>
+</ul>
+
+        </ul>
+         </section>
+
+        <footer>
+            <p><a href="deco.php">Se déconnecter</a></p>
+        </footer>
+    </div>
+</body>
+</html>
