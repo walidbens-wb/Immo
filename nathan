@@ -1,0 +1,473 @@
+//Librairies
+#include <Arduino.h>
+#include "BluetoothSerial.h"
+#include <FastIMU.h>
+#include <Wire.h>
+#include "driver/ledc.h"
+
+BluetoothSerial SerialBT;
+LSM6DS3 IMU(Wire);
+AccelData accelData;
+GyroData gyroData;
+calData calibration;
+
+// User led
+#define LEDU1 25
+#define LEDU2 26
+
+// Enable moteurs droit et gauche
+#define EN_D 23
+#define EN_G 4
+
+// Commande PWM moteur droit
+#define IN_1_D 19
+#define IN_2_D 18
+
+// Commande PWM moteur gauche
+#define IN_1_G 17
+#define IN_2_G 16
+
+// Encodeur gauche
+#define ENC_G_CH_A 32
+#define ENC_G_CH_B 33
+
+// Encodeur droit
+#define ENC_D_CH_A 27
+#define ENC_D_CH_B 14
+
+// I2C
+#define SDA 21
+#define SCL 22
+
+// Adresse I2C
+#define ADDR_IMU 0x6B
+#define ADDR_MAG 0x1E
+
+//PID
+struct PID {
+  float erreur, erreur_precedente, integral, derivee, sortie;
+};
+
+PID pid_g = {}, pid_d = {},pid_v_g = {},pid_v_d = {};
+
+//Variables
+int etat = -1;
+int repetitions = 0;
+bool en_rotation = false;
+int angle_cible = 250;
+int pos_g_depart = 0;
+int pos_d_depart = 0;
+
+int distance_g = 0;
+int distance_d = 0;
+volatile int lastEncodedG = 0;
+volatile int lastEncodedD = 0;
+
+int enc_g_a = 0;
+int enc_g_b = 0;
+
+
+int enc_d_a = 0;
+int enc_d_b = 0;
+
+int pos_d = 0;
+int pos_g = 0;
+int prev_pos_d = 0;
+int prev_pos_g = 0;
+
+//Centrale inertielle
+float ax, ay;
+float vx = 0, vy = 0;
+float px = 0, py = 0;
+
+float angleZ = 0;
+long lastTime = 0;
+//PID
+float Kp = 0.02 , Ki = 0.005, Kd = 0.00096;
+float Kp_v = 0.023 , Ki_v = 0.00005, Kd_v = 0.000012; //Kp_v = 0.001 , Ki_v = 0.0055, Kd_v = 0.0258;
+long temps_precedent = 0;
+float dt = 0.01;
+int vitesse_g = 0;
+int vitesse_d = 0;
+int vitesse_voulu_g = 0;
+int vitesse_voulu_d = 0;
+
+void setup() {
+  Serial.begin(9600);            
+  SerialBT.begin("Satanaël");     
+
+  pinMode(EN_D,OUTPUT);
+  pinMode(EN_G,OUTPUT);
+
+  pinMode(IN_1_D,OUTPUT);
+  pinMode(IN_2_D,OUTPUT);
+  pinMode(IN_1_G,OUTPUT);
+  pinMode(IN_2_G,OUTPUT);
+
+  pinMode(ENC_D_CH_A,INPUT_PULLUP);
+  pinMode(ENC_D_CH_B,INPUT_PULLUP);
+  pinMode(ENC_G_CH_A,INPUT_PULLUP);
+  pinMode(ENC_G_CH_B,INPUT_PULLUP);
+
+  digitalWrite(ENC_D_CH_A, HIGH);
+  digitalWrite(ENC_D_CH_B, HIGH);
+  digitalWrite(ENC_G_CH_A, HIGH);
+  digitalWrite(ENC_G_CH_B, HIGH);
+
+  attachInterrupt(digitalPinToInterrupt(ENC_D_CH_A), updateEncoderD, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_D_CH_B), updateEncoderD, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_G_CH_A), updateEncoderG, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_G_CH_B), updateEncoderG, CHANGE);
+
+  ledcAttach(IN_1_D, 5000, 8);
+  ledcAttach(IN_2_D, 5000, 8);
+  ledcAttach(IN_1_G, 5000, 8);
+  ledcAttach(IN_2_G, 5000, 8);
+
+  Wire.begin(); 
+
+   if (IMU.init(calibration) != 0) {
+    Serial.println("Erreur : LSM6DS3 non détecté !");
+    while (1);
+  } else {
+    Serial.println("LSM6DS3 initialisé !");
+  }
+
+  IMU.setAccelRange(4);
+  IMU.setGyroRange(500);
+
+  lastTime = millis();
+  temps_precedent = millis();
+}
+
+//Encodeur gauche
+void updateEncoderG(){
+  int enc_g_a = digitalRead(ENC_G_CH_A);
+  int enc_g_b = digitalRead(ENC_G_CH_B);
+  int encodedG = (enc_g_a << 1) |enc_g_b;
+  int sumg  = (lastEncodedG << 2) | encodedG;
+  if(sumg == 0b1101 || sumg == 0b0100 || sumg == 0b0010 || sumg == 0b1011) pos_g ++;
+  if(sumg == 0b1110 || sumg == 0b0111 || sumg == 0b0001 || sumg == 0b1000) pos_g --;
+  lastEncodedG = encodedG;
+  if(distance_g<0){
+    if(pos_g < distance_g){
+      digitalWrite(EN_G,LOW);
+    }
+  }
+  else if(distance_g > 0){
+    if(pos_g > distance_g){
+      digitalWrite(EN_G,LOW);
+    }
+  }
+}
+//Encodeur droite
+void updateEncoderD(){
+  int enc_d_a = digitalRead(ENC_D_CH_A);
+  int enc_d_b = digitalRead(ENC_D_CH_B);
+  int encodedD = (enc_d_a << 1) |enc_d_b;
+  int sumd  = (lastEncodedD << 2) | encodedD;
+  if(sumd == 0b1101 || sumd == 0b0100 || sumd == 0b0010 || sumd == 0b1011) pos_d --;
+  if(sumd == 0b1110 || sumd == 0b0111 || sumd == 0b0001 || sumd == 0b1000) pos_d ++;
+  lastEncodedD = encodedD;
+  if(distance_g < 0){
+    if(pos_d < distance_g){
+      digitalWrite(EN_D,LOW);
+    }
+  }
+  else if(distance_g > 0){
+    if(pos_d > distance_g){
+      digitalWrite(EN_D,LOW);
+    }
+  }
+}
+/*
+void gyroscope(){
+  IMU.update();
+  IMU.getAccel(&accelData);
+  IMU.getGyro(&gyroData);
+
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastTime) / 1000.0;
+  lastTime = currentTime;
+
+  ax = accelData.accelX;
+  ay = accelData.accelY;
+
+  angleZ += gyroData.gyroZ * dt;
+
+  vx += ax * dt;
+  vy += ay * dt;
+
+  px += vx * dt;
+  py += vy * dt;
+
+  SerialBT.print("Position X: ");
+  SerialBT.print(px, 3);
+  SerialBT.print(" m, Y: ");
+  SerialBT.print(py, 3);
+  SerialBT.print(" m | Angle Z: ");
+  SerialBT.print(angleZ);
+  SerialBT.println("°");
+}*/
+void pid(){
+  long temps = millis();
+  float delta_t = (temps - temps_precedent) / 1000.0;
+
+  if (delta_t >= dt) {
+
+    float vitesse_gauche = (pos_g - prev_pos_g) / delta_t;
+    prev_pos_g = pos_g;
+    float vitesse_droite = (pos_d - prev_pos_d) / delta_t;
+    prev_pos_d = pos_d;
+
+    /*
+    //PID distance
+    pid_v_g.erreur = (distance_g - pos_g );
+    pid_v_g.integral += pid_v_g.erreur * delta_t;
+    pid_v_g.derivee = (pid_v_g.erreur - pid_v_g.erreur_precedente) / delta_t;
+    pid_v_g.sortie = Kp_v * pid_v_g.erreur + Ki_v  * pid_v_g.integral + Kd_v * pid_v_g.derivee;
+    pid_v_g.erreur_precedente = pid_v_g.erreur;
+    vitesse_g = constrain(pid_v_g.sortie,0,240);
+
+    pid_v_d.erreur = (distance_d - pos_d );
+    pid_v_d.integral += pid_v_d.erreur * delta_t;
+    pid_v_d.derivee = (pid_v_d.erreur - pid_v_d.erreur_precedente) / delta_t;
+    pid_v_d.sortie = Kp_v * pid_v_d.erreur + Ki_v  * pid_v_d.integral + Kd_v * pid_v_d.derivee;
+    pid_v_d.erreur_precedente = pid_v_d.erreur;
+    vitesse_d = constrain(pid_v_d.sortie,0,240);
+    */
+
+    // PID Gauche
+    pid_g.erreur = vitesse_voulu_g - vitesse_gauche;
+    pid_g.integral += pid_g.erreur * delta_t;
+    pid_g.derivee = (pid_g.erreur - pid_g.erreur_precedente) / delta_t;
+    pid_g.sortie = Kp * pid_g.erreur + Ki * pid_g.integral + Kd * pid_g.derivee;
+    pid_g.erreur_precedente = pid_g.erreur;
+
+    // PID Droite
+    pid_d.erreur = vitesse_voulu_d - vitesse_droite;
+    pid_d.integral += pid_d.erreur * delta_t;
+    pid_d.derivee = (pid_d.erreur - pid_d.erreur_precedente) / delta_t;
+    pid_d.sortie = Kp * pid_d.erreur + Ki * pid_d.integral + Kd * pid_d.derivee;
+    pid_d.erreur_precedente = pid_d.erreur;
+    SerialBT.println(pid_g.sortie);
+
+    vitesse_g = vitesse_voulu_g + constrain(pid_g.sortie,0,240);
+    vitesse_d = vitesse_voulu_d + constrain(pid_d.sortie,0,240);
+    
+    temps_precedent = temps;
+  }
+}
+void changement(){
+  pos_g = 0;
+  pos_d = 0;
+  prev_pos_g = 0;
+  prev_pos_d = 0;
+  pid_g.integral =0;
+  pid_d.integral =0;
+  pid_d.erreur_precedente =0;
+  pid_g.erreur_precedente =0;
+}
+void fleche(){
+  if (etat == 0) {
+    if (pos_g < distance_g) {
+      ledcWrite(IN_1_D, 0);
+      ledcWrite(IN_2_D, vitesse_d);
+      digitalWrite(EN_D, HIGH);
+      ledcWrite(IN_1_G, vitesse_g);
+      ledcWrite(IN_2_G, 0);
+      digitalWrite(EN_G, HIGH);
+    } else {
+      digitalWrite(EN_D, LOW);
+      digitalWrite(EN_G, LOW);
+      etat = 1;
+      changement();
+      vitesse_voulu_g = 100;
+      vitesse_voulu_d = 120;
+      distance_g = -1000;
+    }
+  }
+
+  else if (etat == 1) {
+   if (pos_g > distance_g) {
+      ledcWrite(IN_1_D, vitesse_d);
+      ledcWrite(IN_2_D, 0);
+      digitalWrite(EN_D, HIGH);
+      ledcWrite(IN_1_G, 0);
+      ledcWrite(IN_2_G, vitesse_g);
+      digitalWrite(EN_G, HIGH);
+    } else {
+      digitalWrite(EN_D, LOW);
+      digitalWrite(EN_G, LOW);
+      etat = 2;
+      changement();
+      vitesse_voulu_g = 160;
+      vitesse_voulu_d = 100;
+      distance_g = 500;
+      pos_g_depart = pos_g;
+      pos_d_depart = pos_d;
+    }
+    
+  }
+  else if (etat == 2) {
+   if (pos_g < distance_g) {
+      ledcWrite(IN_1_D, 0);
+      ledcWrite(IN_2_D, vitesse_d);
+      digitalWrite(EN_D, HIGH);
+      ledcWrite(IN_1_G, vitesse_g);
+      ledcWrite(IN_2_G, 0);
+      digitalWrite(EN_G, HIGH);
+    } else {
+      digitalWrite(EN_D, LOW);
+      digitalWrite(EN_G, LOW);
+      etat = 3;
+      changement();
+      vitesse_voulu_g = 100;
+      vitesse_voulu_d = 120;
+      distance_g = -500;
+    }
+    
+  }
+  else if (etat == 3) {
+   if (pos_d > distance_g) {
+      ledcWrite(IN_1_D, vitesse_d);
+      ledcWrite(IN_2_D, 0);
+      digitalWrite(EN_D, HIGH);
+      ledcWrite(IN_1_G, 0);
+      ledcWrite(IN_2_G, vitesse_g);
+      digitalWrite(EN_G, HIGH);
+    } else {
+      digitalWrite(EN_D, LOW);
+      digitalWrite(EN_G, LOW);
+      SerialBT.println("Carré terminé");
+        etat = -1;
+    }
+    
+  }
+  else {
+        SerialBT.println("Carré terminé");
+        etat = -1;
+      }
+}
+void carre() {
+  switch (etat) {
+    case 0: // Avancer tout droit
+      if (pos_g < distance_g) {
+        ledcWrite(IN_1_D, 0);
+        ledcWrite(IN_2_D, vitesse_d);
+        digitalWrite(EN_D, HIGH);
+
+        ledcWrite(IN_1_G, vitesse_g);
+        ledcWrite(IN_2_G, 0);
+        digitalWrite(EN_G, HIGH);
+      } else {
+        digitalWrite(EN_D, LOW);
+        digitalWrite(EN_G, LOW);
+        changement();
+        pos_g = pos_d = 0; // Reset des positions si nécessaire
+        etat = 1;
+        distance_g = 300; // Tourner sur soi-même roue gauche
+      }
+      break;
+
+    case 1: // Rotation roue gauche uniquement
+      if (pos_g < distance_g) {
+        ledcWrite(IN_1_D, 0);
+        ledcWrite(IN_2_D, 0);
+        digitalWrite(EN_D, LOW);
+
+        ledcWrite(IN_1_G, vitesse_g);
+        ledcWrite(IN_2_G, 0);
+        digitalWrite(EN_G, HIGH);
+      } else {
+        digitalWrite(EN_D, LOW);
+        digitalWrite(EN_G, LOW);
+        changement();
+        pos_g = pos_d = 0; // Reset des positions si nécessaire
+        etat = 2;
+        distance_g = 1000; // Re-avancer mais vitesse gauche doublée
+      }
+      break;
+
+    case 2: // Avance avec roue gauche à 2×vitesse
+      if (pos_g < distance_g) {
+        ledcWrite(IN_1_D, 0);
+        ledcWrite(IN_2_D, vitesse_d);
+        digitalWrite(EN_D, HIGH);
+
+        ledcWrite(IN_1_G, vitesse_g );
+        ledcWrite(IN_2_G, 0);
+        digitalWrite(EN_G, HIGH);
+      } else {
+        digitalWrite(EN_D, LOW);
+        digitalWrite(EN_G, LOW);
+        changement();
+        etat = 3;
+        distance_d = 300; // Tourne avec roue droite uniquement
+        pos_g = pos_d = 0; // Reset des positions si nécessaire
+      }
+      break;
+
+    case 3: // Rotation roue droite uniquement à 2×vitesse
+      if (pos_d < distance_d) {
+        ledcWrite(IN_1_G, 0);
+        ledcWrite(IN_2_G, 0);
+        digitalWrite(EN_G, LOW);
+
+        ledcWrite(IN_1_D, 0);
+        ledcWrite(IN_2_D, vitesse_d * 2);
+        digitalWrite(EN_D, HIGH);
+      } else {
+        digitalWrite(EN_D, LOW);
+        digitalWrite(EN_G, LOW);
+        SerialBT.println("Carré terminé.");
+        etat = -1;
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+String mode = "";
+
+void loop() {
+  String choix = SerialBT.readStringUntil('\n');
+
+  if (choix == "carre") {
+    mode = "carre";
+    distance_g=1000;
+    etat = 0;
+    repetitions = 0;
+    vitesse_voulu_g = 140;
+    vitesse_voulu_d = 140;
+    pos_g = pos_d = 0;
+  }
+  else if (choix == "fleche") {
+    mode = "fleche";
+    etat = 0;
+    repetitions = 0;
+    vitesse_voulu_g = 100;
+    vitesse_voulu_d = 100;
+    pos_g = pos_d = 0;
+  }
+  else if (choix == "stop") {
+    digitalWrite(EN_D, LOW);
+    digitalWrite(EN_G, LOW);
+    etat = -1;
+  }
+
+  pid();
+
+  if (etat != -1) {
+    if (mode == "carre") carre();
+    else if (mode == "fleche") fleche();
+  }
+
+  SerialBT.print("pid gauche: "); SerialBT.println(vitesse_g);
+  SerialBT.print("pid droit: "); SerialBT.println(vitesse_d);
+  SerialBT.print("position gauche: "); SerialBT.println(pos_g);
+  SerialBT.print("position droite: "); SerialBT.println(pos_d);
+}
+ 
