@@ -1,0 +1,252 @@
+<?php
+if (!isset($_GET['id'])) {
+    echo "Agent inconnu.";
+    exit;
+}
+
+$conn = new mysqli("localhost", "root", "", "immobilier");
+if ($conn->connect_error) die("Erreur : " . $conn->connect_error);
+
+$id = intval($_GET['id']);
+
+$stmt = $conn->prepare("SELECT * FROM agents WHERE ID_agent = ?");
+$stmt->bind_param("i", $id);
+$stmt->execute();
+$result = $stmt->get_result();
+
+if ($result->num_rows === 0) {
+    echo "Aucun agent trouvé.";
+    exit;
+}
+
+$agent = $result->fetch_assoc();
+// Récupérer un bien associé à l'agent pour prise de RDV
+// Récupérer tous les biens associés à l'agent
+$stmtBiens = $conn->prepare("SELECT ID_bien, titre FROM biens WHERE ID_agent = ?");
+$stmtBiens->bind_param("i", $id);
+$stmtBiens->execute();
+$resultBiens = $stmtBiens->get_result();
+
+$biens_agent = $resultBiens->fetch_all(MYSQLI_ASSOC); // Tableau de biens
+
+
+// Jours de la semaine sans dimanche
+$jours = ['lundi','mardi','mercredi','jeudi','vendredi','samedi'];
+
+// Vérifier si l'agent a déjà des jours de repos en base
+$stmtCheck = $conn->prepare("SELECT jour FROM jours_repos WHERE ID_agent = ?");
+$stmtCheck->bind_param("i", $id);
+$stmtCheck->execute();
+$resultCheck = $stmtCheck->get_result();
+
+$joursReposExistants = [];
+while ($row = $resultCheck->fetch_assoc()) {
+    $joursReposExistants[] = $row['jour'];
+}
+
+if (empty($joursReposExistants)) {
+    // Pas de jours de repos enregistrés => en créer 2 aléatoires
+    shuffle($jours);
+    $joursAbsents = array_slice($jours, 0, 2);
+
+    $stmtDelete = $conn->prepare("DELETE FROM jours_repos WHERE ID_agent = ?");
+    $stmtDelete->bind_param("i", $id);
+    $stmtDelete->execute();
+
+    $stmtInsert = $conn->prepare("INSERT INTO jours_repos (ID_agent, jour) VALUES (?, ?)");
+    foreach ($joursAbsents as $jour) {
+        $stmtInsert->bind_param("is", $id, $jour);
+        $stmtInsert->execute();
+    }
+} else {
+    $joursAbsents = $joursReposExistants; // utiliser ce qui est en base
+}
+
+// Initialiser tous les jours comme disponibles (Présent)
+$dispos = array_fill_keys($jours, [['09:00:00', '17:00:00']]);
+
+// Mettre à vide les jours de repos
+foreach ($joursAbsents as $jour) {
+    $dispos[$jour] = [];
+}
+?>
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Profil de <?= htmlspecialchars($agent['prenom']) ?></title>
+    <style>
+        body {
+            font-family: Arial;
+            background-color: #f9f9f9;
+            text-align: center;
+            padding: 40px;
+        }
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            width: 600px;
+            margin: auto;
+            box-shadow: 0 0 12px rgba(0,0,0,0.1);
+        }
+        img {
+            border-radius: 50%;
+            width: 120px;
+            height: 120px;
+            object-fit: cover;
+        }
+        h2 {
+            margin: 15px 0 5px;
+        }
+        p {
+            margin: 8px 0;
+        }
+        .planning {
+            margin-top: 20px;
+            text-align: left;
+        }
+        .planning table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .planning th, .planning td {
+            border: 1px solid #ccc;
+            padding: 8px;
+        }
+        .sections {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 30px;
+        }
+        .section-box {
+            width: 32%;
+            padding: 20px;
+            background: #f0f0f0;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <img src="images/<?= htmlspecialchars($agent['photo']) ?>" alt="Photo">
+    <h2><?= htmlspecialchars($agent['prenom']) ?> <?= htmlspecialchars($agent['nom']) ?></h2>
+    <p><em>Agent Immobilier Agréé</em></p>
+    <p><strong>Téléphone :</strong> <?= htmlspecialchars($agent['tel']) ?></p>
+    <p><strong>Email :</strong> <?= htmlspecialchars(trim($agent['email'])) ?></p>
+
+    <div class="planning">
+        <h3>Planning de disponibilité</h3>
+        <table>
+            <tr>
+                <th>Jour</th>
+                <th>Horaires</th>
+            </tr>
+            <?php foreach ($dispos as $jour => $creneaux): ?>
+                <tr>
+                    <td><?= ucfirst($jour) ?></td>
+                    <td>
+                        <?php if (empty($creneaux)): ?>
+                            Absent
+                        <?php else: ?>
+                            <?php foreach ($creneaux as $creneau): ?>
+                                <?= substr($creneau[0], 0, 5) ?> - <?= substr($creneau[1], 0, 5) ?><br>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    </div>
+
+    <div class="sections">
+        <div class="section-box">
+            <h4>🗓 Prendre un RDV</h4>
+            <?php if (!empty($biens_agent)): ?>
+    <form method="get" action="rdv.php">
+    <input type="hidden" name="id_agent" value="<?= $agent['ID_agent'] ?>">
+    
+    <label for="id_bien">Choisissez un bien :</label>
+    <select name="id_bien" required>
+        <?php foreach ($biens_agent as $b): ?>
+            <option value="<?= $b['ID_bien'] ?>"><?= htmlspecialchars($b['titre']) ?></option>
+        <?php endforeach; ?>
+    </select>
+
+    <button type="submit">Prendre un rendez-vous</button>
+</form>
+<?php else: ?>
+    <p style="color: gray;">Aucun bien associé à cet agent.</p>
+<?php endif; ?>
+        </div>
+      <div class="section-box">
+    <h4>💬 Communiquer</h4>
+
+    <!-- TEXTO -->
+    <button type="button" onclick="document.getElementById('sms-box').style.display = 'block'">📱 Texto</button>
+    <div id="sms-box" style="display:none; margin-top:10px;">
+        <form method="post">
+            <textarea name="message" placeholder="Votre message ici..." rows="4" cols="30" required></textarea><br>
+            <button type="submit" name="envoyer_sms">Envoyer</button>
+        </form>
+    </div>
+
+    <!-- AUDIO -->
+    <button onclick="startAudioCall()">🔊 Appel Audio</button>
+
+    <!-- VIDEO -->
+    <button onclick="startVideoCall()">📹 Appel Vidéo</button>
+
+    <!-- LECTEURS -->
+    <div style="margin-top: 15px;">
+        <audio id="audio" autoplay style="display:none;"></audio>
+        <video id="video" width="300" autoplay muted style="display:none;"></video>
+    </div>
+</div>
+    <script>
+    const audioElement = document.getElementById('audio');
+    const videoElement = document.getElementById('video');
+
+    async function startAudioCall() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            audioElement.srcObject = stream;
+            audioElement.style.display = 'block';
+            videoElement.style.display = 'none';
+        } catch (e) {
+            alert("Erreur accès micro : " + e.message);
+        }
+    }
+
+    async function startVideoCall() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            videoElement.srcObject = stream;
+            videoElement.style.display = 'block';
+            audioElement.style.display = 'none';
+        } catch (e) {
+            alert("Erreur accès caméra : " + e.message);
+        }
+    }
+</script>
+
+    <?php if (!empty($message_envoye)): ?>
+        <div style="margin-top:15px; background:#e6ffe6; padding:10px; border:1px solid #a3d9a5; border-radius:5px;">
+            Message envoyé :<br>
+            <em>"<?= $message_envoye ?>"</em>
+        </div>
+    <?php endif; ?>
+</div>
+
+        <div class="section-box">
+            <h4>📄 CV</h4>
+<a href="cv/<?= htmlspecialchars($agent['cv']) ?>" target="_blank" class="cv-button">📄 Voir le CV</a>
+<p style="margin-top: 30px;">
+    <a href="parcourir.html"><button>⬅️ Retour aux agents</button></a>
+</p>
+        </div>
+    </div>
+</div>
+</body>
+</html>
